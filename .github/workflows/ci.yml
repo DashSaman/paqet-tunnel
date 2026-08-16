@@ -1,0 +1,31 @@
+name: Installer CI
+
+on:
+  push:
+    branches:
+      - main
+      - "perf/**"
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  syntax:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+      - name: Bash syntax
+        run: |
+          bash -n install.sh
+          bash -n install-optimized.sh
+      - name: Verify low-overhead profile
+        run: |
+          grep -q 'KCP_NODELAY="0"' install-optimized.sh
+          grep -q 'KCP_INTERVAL="10"' install-optimized.sh
+          grep -q 'KCP_RESEND="0"' install-optimized.sh
+          grep -q 'KCP_ACKNODELAY="false"' install-optimized.sh
+          grep -q 'KCP_RCVWND="4096"' install-optimized.sh
+          grep -q 'KCP_SNDWND="4096"' install-optimized.sh
+          grep -q 'KCP_MTUN="${KCP_MTU:-1420}"' install-optimized.sh
