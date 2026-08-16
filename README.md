@@ -2,50 +2,97 @@
 
 Easy installer for tunneling VPN traffic through a middle server using [paqet](https://github.com/hanselime/paqet) — raw packet-level tunneling that bypasses network restrictions.
 
-**Version:** v2.0.0
+**PVN optimized installer:** v2.1.0-pvn1  
+**Original full-menu installer:** v2.0.0
+
+## PVN low-overhead installer (recommended)
+
+The optimized installer uses an explicit KCP manual profile that also works with the current upstream Paqet binary. It is tuned to reduce unnecessary ACK/retransmit traffic on healthy links while retaining large windows for high-throughput Iran ↔ abroad paths.
+
+Run on both servers as root:
+
+```bash
+bash <(curl -fsSL https://raw.githubusercontent.com/DashSaman/paqet-tunnel/main/install-optimized.sh)
+```
+
+The recommended profile is generated explicitly:
+
+```yaml
+mode: "manual"
+nodelay: 0
+interval: 10
+resend: 0
+nocongestion: 1
+wdelay: true
+acknodelay: false
+mtu: 1420
+rcvwnd: 4096
+sndwnd: 4096
+block: "aes-128"
+smuxbuf: 8388608
+streambuf: 4194304
+smuxkalive: 5
+smuxktimeout: 20
+```
+
+The optimized installer also:
+
+- starts with `conn: 1` for minimum session/pcap overhead and lets you raise it when needed;
+- uses a 16 MiB pcap receive buffer on the abroad/server side and 8 MiB on the entry/client side;
+- installs idempotent NOTRACK/RST protection rules through a persistent systemd oneshot service;
+- creates one systemd service per client tunnel;
+- can back up and convert existing `/opt/paqet/config*.yaml` files to the low-overhead profile;
+- keeps the encryption enabled with `aes-128`.
+
+> `efficient` mode in the DashSaman Paqet fork is the source-level equivalent of this profile. The installer deliberately writes the explicit `manual` values so it remains compatible with an upstream binary as well.
 
 ## How it works
 
-Clients connect to **Server A** (the Iran entry point), which tunnels traffic over an encrypted paqet/KCP link to **Server B** (abroad), where your V2Ray/X-UI runs. You only change the IP in your VPN client from Server B to Server A — nothing else.
+Clients connect to **Server A** (the Iran entry point), which tunnels traffic over an encrypted paqet/KCP link to **Server B** (abroad), where your V2Ray/X-UI runs.
 
-```
+```text
 Client ──▶ Server A (Iran) ══ paqet tunnel ══▶ Server B (abroad) ──▶ V2Ray
 ```
 
-## Install
+## Optimized setup
 
-Run on **both** servers (as root):
+**1. Server B (abroad)**
 
-```bash
-bash <(curl -fsSL https://raw.githubusercontent.com/g3ntrix/paqet-tunnel/main/install.sh)
+Choose `1) Setup foreign/server (Server B)`, select the Paqet listen port and copy the generated key.
+
+**2. Server A (Iran)**
+
+Choose `2) Setup entry/client tunnel (Server A)`, enter Server B's IP/port/key, choose a tunnel name and the forwarded application ports.
+
+For an existing installation choose:
+
+```text
+3) Optimize existing Paqet config(s)
 ```
 
-The first run is a guided wizard: it asks whether this machine is the abroad server or the Iran server, auto-detects the network, and walks you through the rest.
+The script creates timestamped backups before changing existing configuration files.
 
-## Setup (two steps)
+## Original full-menu installer
 
-**1. Server B (abroad)** — choose **Abroad server (B)**:
-- Confirm the detected network, pick the paqet port (default `8888`), enter your V2Ray port(s).
-- Copy the **Connection String** it prints at the end (`paqet://…`).
+The original forked v2.0.0 wizard is still available unchanged:
 
-**2. Server A (Iran)** — choose **Iran entry server (A)**:
-- Give the tunnel a name, then **paste the Connection String** — it fills in the IP, port, key, and ports automatically.
-- A health check confirms the tunnel is live.
+```bash
+bash <(curl -fsSL https://raw.githubusercontent.com/DashSaman/paqet-tunnel/main/install.sh)
+```
 
-Then point your VPN client at **Server A's IP** instead of Server B's.
+It includes connection strings, health checks, edit/manage menus and the original KCP presets.
 
-> To reach more abroad servers, run Server A setup again with a different tunnel name.
+## Important notes
 
-## ⚠️ Required: V2Ray must listen on 0.0.0.0
+- Start with `conn: 1`. More connections can help aggregate multi-flow throughput on some multi-core servers, but they also create extra KCP/SMUX and packet-I/O state.
+- The low-overhead profile is intended for healthy/high-throughput paths. On a strongly lossy or throttled route, compare it against `fast3` before deciding which profile is better.
+- Paqet's KCP settings must match where protocol behavior requires it; always test both ends as a pair.
+- Do not disable encryption just to chase CPU savings. The optimized installer keeps `aes-128` enabled.
+- If MTU 1420 is not clean on a particular path, retry with a lower value such as 1400 or 1350 and compare actual goodput/drop rate.
 
-On **Server B**, set your V2Ray/X-UI inbound **Listen IP** to `0.0.0.0` (not the public IP, not empty). paqet delivers traffic to `127.0.0.1:PORT`, so V2Ray must accept localhost connections.
+## V2Ray / X-UI target
 
-## Handy menu options
-
-- **c** — Health check (verify the tunnel end-to-end)
-- **k** — Show the Connection String again (Server B)
-- **3** Status · **5** Edit config · **6** Manage tunnels · **u** Uninstall
-- **i** — Install as the `paqet-tunnel` command (then just run `paqet-tunnel`)
+On Server B, make sure the target service accepts the address Paqet forwards to. The default generated forward target is `127.0.0.1:PORT`, so your application must accept localhost connections on that port.
 
 ## Commands
 
@@ -54,22 +101,28 @@ On **Server B**, set your V2Ray/X-UI inbound **Listen IP** to `0.0.0.0` (not the
 systemctl status paqet
 journalctl -u paqet -f
 
-# Server A (per tunnel — <name> is your tunnel name)
+# Server A
 systemctl status paqet-<name>
 journalctl -u paqet-<name> -f
+
+# Firewall helper
+systemctl status paqet-firewall
+
+# Show generated low-overhead values
+grep -H -E 'mode:|nodelay:|interval:|resend:|mtu:|rcvwnd:|sndwnd:|smux' /opt/paqet/config*.yaml
 ```
 
 ## Troubleshooting
 
-- **`connection lost, retrying` / health check fails** — on Server A, the paqet port must be Server B's **tunnel port** (e.g. `8888`), not the V2Ray port. Re-run setup, or paste the Connection String so it's filled in automatically.
-- **Clients can't connect** — confirm V2Ray listens on `0.0.0.0`, and the cloud firewall allows the paqet port on Server B.
-- **Download blocked in Iran** — grab the paqet binary from [releases](https://github.com/hanselime/paqet/releases) and give the installer the local file path when prompted.
-- **High latency** — usually the underlying Iran↔abroad route. Compare with a direct `ping` between the two servers; the tunnel can't go faster than that baseline.
+- If the service does not start, run `journalctl -u paqet -n 100 --no-pager` or the corresponding `paqet-<name>` unit.
+- If the tunnel is alive but throughput is poor, compare direct route latency/loss first; identical KCP settings can behave very differently on different datacenter paths.
+- If the latest upstream binary cannot be downloaded, download the Paqet release manually and place it at `/opt/paqet/paqet` with executable permission.
+- For an existing installation, keep the `.bak.TIMESTAMP` config created by the optimizer until the new profile has been load-tested.
 
 ## Requirements
 
-Linux (Ubuntu / Debian / CentOS), root access, `libpcap` and `iptables` (auto-installed).
+Linux, root access, `curl`, `libpcap`, `iproute2`, `iptables`, and systemd. The installer handles the common package dependencies automatically.
 
 ## Credits & License
 
-Built on [paqet](https://github.com/hanselime/paqet) by hanselime. MIT License.
+Built on [paqet](https://github.com/hanselime/paqet) by hanselime. The Paqet source and this installer are distributed under their respective MIT license terms; original copyright/license notices are retained.
